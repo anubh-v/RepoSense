@@ -138,20 +138,17 @@ task startServerInBackground(dependsOn: 'classes', type: com.github.psxpaul.task
 }
 
 task installCypress(type: com.liferay.gradle.plugins.node.tasks.NpmInstallTask) {
-    workingDir = file('frontend/cypress/')
 }
 
 task cypress(dependsOn: ['installCypress', 'startServerInBackground'], type: com.liferay.gradle.plugins.node.tasks.ExecuteNpmTask) {
     tasks.startServerInBackground.mustRunAfter('installCypress')
 
-    workingDir = file('frontend/cypress/')
     args = ["run-script", "debug"]
 }
 
 task frontendTest(dependsOn: ['installCypress', 'startServerInBackground'], type: com.liferay.gradle.plugins.node.tasks.ExecuteNpmTask) {
     tasks.startServerInBackground.mustRunAfter('installCypress')
 
-    workingDir = file('frontend/cypress/')
     args = ["run-script", "tests"]
 
     // Run tests in CI without slow motion
