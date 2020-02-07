@@ -58,6 +58,7 @@ public class CommitInfoAnalyzer {
                 .filter(commitResult -> !commitResult.getAuthor().equals(Author.UNKNOWN_AUTHOR)
                         && !CommitHash.isInsideCommitList(commitResult.getHash(), config.getIgnoreCommitList()))
                 .sorted(Comparator.comparing(CommitResult::getTime))
+                .distinct()
                 .collect(Collectors.toList());
     }
 
