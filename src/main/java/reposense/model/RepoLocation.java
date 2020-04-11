@@ -1,13 +1,10 @@
 package reposense.model;
 
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
+import static reposense.util.FileUtil.fileExists;
+import static reposense.util.SystemUtil.isValidUrl;
+
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -17,11 +14,21 @@ import reposense.parser.InvalidLocationException;
  * Represents a repository location.
  */
 public class RepoLocation {
+    public static final String MESSAGE_INVALID_LOCATION = "The given location is invalid";
     private static final String GIT_LINK_SUFFIX = ".git";
+    private static final String BRANCH_DELIMITER = "#";
     private static final Pattern GIT_REPOSITORY_LOCATION_PATTERN =
-            Pattern.compile("^.*github.com\\/(?<org>.+?)\\/(?<repoName>.+?)\\.git$");
+            Pattern.compile("^.*github.com\\/(?<org>.+?)\\/(?<repoName>.+?)\\.git(#(?<branch>.+))?$");
+    private static final Pattern GITHUB_BRANCH_URL_PATTERN =
+            Pattern.compile("(http|https)://github.com/(?<org>.+?)/(?<repoName>.+?)/tree/(?<branch>.+?)");
+
+    private static final int LOCATION_INDEX = 0;
+    private static final int REPO_NAME_INDEX = 1;
+    private static final int ORG_INDEX = 2;
+    private static final int BRANCH_NAME_INDEX = 3;
 
     private final String location;
+    private final transient Optional<String> parsedBranch;
     private final String repoName;
     private String organization;
 
@@ -29,16 +36,15 @@ public class RepoLocation {
      * @throws InvalidLocationException if {@code location} cannot be represented by a {@code URL} or {@code Path}.
      */
     public RepoLocation(String location) throws InvalidLocationException {
-        verifyLocation(location);
-        this.location = location;
-        Matcher matcher = GIT_REPOSITORY_LOCATION_PATTERN.matcher(location);
+        this(parse(location));
+    }
 
-        if (matcher.matches()) {
-            organization = matcher.group("org");
-            repoName = matcher.group("repoName");
-        } else {
-            repoName = Paths.get(location).getFileName().toString().replace(GIT_LINK_SUFFIX, "");
-        }
+    private RepoLocation(String[] repoLocationDetails) {
+        assert repoLocationDetails.length == 4;
+        location = repoLocationDetails[LOCATION_INDEX];
+        repoName = repoLocationDetails[REPO_NAME_INDEX];
+        organization = repoLocationDetails[ORG_INDEX];
+        parsedBranch = Optional.ofNullable(repoLocationDetails[BRANCH_NAME_INDEX]);
     }
 
     public boolean isEmpty() {
@@ -53,31 +59,104 @@ public class RepoLocation {
         return organization;
     }
 
+    public Optional<String> getParsedBranch() {
+        return parsedBranch;
+    }
+
     /**
-     * Verifies {@code location} can be presented as a {@code URL} or {@code Path}.
-     * @throws InvalidLocationException if otherwise.
+     * Parses a String representing a repo location (which could be a repo URL, branch URL
+     * or a filepath), and returns an array containing the following details
+     * of the repository (in order):
+     * { location, repository name, organisation name, branch name (if any) }
+     *
+     * @param location a repository location, which is a file path or URL with the branch
+     *         name optionally appended
+     * @throws InvalidLocationException if the repo location is an invalid path or an invalid URL
      */
-    private void verifyLocation(String location) throws InvalidLocationException {
-        boolean isValidPathLocation = false;
-        boolean isValidGitUrl = false;
-
-        try {
-            Path pathLocation = Paths.get(location);
-            isValidPathLocation = Files.exists(pathLocation);
-        } catch (InvalidPathException ipe) {
-            // Ignore exception
+    private static String[] parse(String location) throws InvalidLocationException {
+        String[] parsedInfo = tryParsingAsRepoUrl(location);
+        if (parsedInfo != null) {
+            return parsedInfo;
         }
 
-        try {
-            new URL(location);
-            isValidGitUrl = location.endsWith(GIT_LINK_SUFFIX);
-        } catch (MalformedURLException mue) {
-            // Ignore exception
+        parsedInfo = tryParsingAsPath(location, true);
+        if (parsedInfo != null) {
+            return parsedInfo;
         }
 
-        if (!isValidPathLocation && !isValidGitUrl) {
-            throw new InvalidLocationException(location + " is an invalid location.");
+        parsedInfo = tryParsingAsBranchUrl(location);
+        if (parsedInfo != null) {
+            return parsedInfo;
         }
+
+        throw new InvalidLocationException(MESSAGE_INVALID_LOCATION);
+    }
+
+    /**
+     * Parses a given path to a repo and returns an array containing the following info:
+     * { url, repository name, organisation name, branch name (if any) }
+     *
+     * @param path A path to a repository
+     * @param isPathValidationNeeded If this flag is set to true, then the method will check
+     *         verify that {@code path} is a valid path and refers to an actual directory on the
+     *         filesystem.
+     *
+     * @return null if the given String is an invalid path, or no directory exists at the path,
+     *         and {@code isPathValidationNeeded} was set to true.
+     */
+    private static String[] tryParsingAsPath(String path, boolean isPathValidationNeeded)  {
+        String[] split = path.split(BRANCH_DELIMITER);
+        String filePath = split[0];
+        if (isPathValidationNeeded && !fileExists(filePath)) {
+            return null;
+        }
+        String repoName = Paths.get(filePath).getFileName().toString().replace(GIT_LINK_SUFFIX, "");
+        String branch = split.length == 1 ? null : split[1];
+        return new String[] { filePath, repoName, null, branch };
+    }
+
+    /**
+     * Parses a given repo URL and returns an array containing the following info:
+     * { url, repository name, organisation name, branch name (if any) }
+     *
+     * @return null if the given String is an invalid URL, or does not match the
+     *         format of a GitHub repo URL.
+     */
+    private static String[] tryParsingAsRepoUrl(String repoUrl) {
+        return tryParsingAsUrl(GIT_REPOSITORY_LOCATION_PATTERN, repoUrl);
+    }
+
+    /**
+     * Parses a given branch URL and returns an array containing the following info:
+     * { url, repository name, organisation name, branch name (if any) }
+     *
+     * @return null if the given String is an invalid URL, or does not match the
+     *         format of a branch URL.
+     */
+    private static String[] tryParsingAsBranchUrl(String branchUrl) {
+        return tryParsingAsUrl(GITHUB_BRANCH_URL_PATTERN, branchUrl);
+    }
+
+    /**
+     * Parses a given URL and returns an array containing the following info:
+     * { url, repository name, organisation name, branch name (if any) }
+     *
+     * @param urlPattern a Pattern that matches either the URL of a repo on GitHub,
+     *        or the URL of a repo's branch on GitHub
+     * @param url a String that may contain a url
+     *
+     * @return null if the given String is an invalid URL, or does not match the {@code urlPattern}.
+     */
+    private static String[] tryParsingAsUrl(Pattern urlPattern, String url) {
+        Matcher matcher = urlPattern.matcher(url);
+        if (!isValidUrl(url) || !matcher.matches()) {
+            return null;
+        }
+        String org = matcher.group("org");
+        String repoName = matcher.group("repoName");
+        String branch = matcher.group("branch");
+        String location = createRepoUrl(org, repoName);
+        return new String[] { location, repoName, org, branch };
     }
 
     @Override
@@ -106,21 +185,7 @@ public class RepoLocation {
         return location.hashCode();
     }
 
-    /**
-     * Converts all the strings in {@code locations} into {@code RepoLocation} objects.
-     * Returns null if {@code locations} is null.
-     * @throws InvalidLocationException if any of the strings are in invalid formats.
-     */
-    public static List<RepoLocation> convertStringsToLocations(List<String> locations) throws InvalidLocationException {
-        if (locations == null) {
-            return null;
-        }
-
-        List<RepoLocation> convertedLocations = new ArrayList<>();
-        for (String location : locations) {
-            convertedLocations.add(new RepoLocation(location));
-        }
-
-        return convertedLocations;
+    private static String createRepoUrl(String org, String repoName) {
+        return "https://github.com/" + org + "/" + repoName + GIT_LINK_SUFFIX;
     }
 }

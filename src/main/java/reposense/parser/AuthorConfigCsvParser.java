@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import org.apache.commons.csv.CSVRecord;
@@ -52,7 +53,7 @@ public class AuthorConfigCsvParser extends CsvParser<AuthorConfiguration> {
     @Override
     protected void processLine(List<AuthorConfiguration> results, CSVRecord record)
             throws ParseException {
-        String location = get(record, LOCATION_POSITION);
+        List<String> locations = getAsListOrDefault(record, LOCATION_POSITION, Collections.singletonList(""));
         String branch = getOrDefault(record, BRANCH_POSITION, AuthorConfiguration.DEFAULT_BRANCH);
         String gitHubId = get(record, GITHUB_ID_POSITION);
         List<String> emails = getAsList(record, EMAIL_POSITION);
@@ -60,22 +61,24 @@ public class AuthorConfigCsvParser extends CsvParser<AuthorConfiguration> {
         List<String> aliases = getAsList(record, ALIAS_POSITION);
         List<String> ignoreGlobList = getAsList(record, IGNORE_GLOB_LIST_POSITION);
 
-        AuthorConfiguration config = findMatchingAuthorConfiguration(results, location, branch);
+        for (String location : locations) {
+            AuthorConfiguration config = findMatchingAuthorConfiguration(results, location, branch);
 
-        Author author = new Author(gitHubId);
+            Author author = new Author(gitHubId);
 
-        if (config.containsAuthor(author)) {
-            logger.warning(String.format(
-                    "Skipping author as %s already in repository %s %s",
-                    author.getGitId(), config.getLocation(), config.getBranch()));
-            return;
+            if (config.containsAuthor(author)) {
+                logger.warning(String.format(
+                        "Skipping author as %s already in repository %s %s",
+                        author.getGitId(), config.getLocation(), config.getBranch()));
+                return;
+            }
+
+            config.addAuthor(author);
+            setEmails(config, author, emails);
+            setDisplayName(config, author, displayName);
+            setAliases(config, author, gitHubId, aliases);
+            setAuthorIgnoreGlobList(author, ignoreGlobList);
         }
-
-        config.addAuthor(author);
-        setEmails(config, author, emails);
-        setDisplayName(config, author, displayName);
-        setAliases(config, author, gitHubId, aliases);
-        setAuthorIgnoreGlobList(author, ignoreGlobList);
     }
 
 
@@ -87,7 +90,9 @@ public class AuthorConfigCsvParser extends CsvParser<AuthorConfiguration> {
      */
     private static AuthorConfiguration findMatchingAuthorConfiguration(
             List<AuthorConfiguration> results, String location, String branch) throws InvalidLocationException {
-        AuthorConfiguration config = new AuthorConfiguration(new RepoLocation(location), branch);
+        RepoLocation repoLocation = new RepoLocation(location);
+        AuthorConfiguration config = new AuthorConfiguration(repoLocation,
+                repoLocation.getParsedBranch().orElse(branch));
 
         for (AuthorConfiguration authorConfig : results) {
             if (authorConfig.getLocation().equals(config.getLocation())
